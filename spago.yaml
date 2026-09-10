@@ -127,3 +127,7 @@ workspace:
       path: "../purust-variant"
     yoga-json:
       path: "../purust-yoga-json"
+
+  backend:
+    cmd: ../purust/bin/purust
+    args: [--main, Test.Main, --source, output, --out, output/purust_output]
