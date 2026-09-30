@@ -792,6 +792,24 @@ mod purust_json_scan_tests {
                 }
             }
         }
+        // Multiple specials and near-matches exercise cross-lane borrow,
+        // including chunk boundaries and high bytes in UTF-16 storage.
+        let alphabet = [0, 1, 0x1f, 0x20, 0x21, b'"', b'#', b'\\', b']', 0x7f, 0x80, 0xff];
+        let mut seed = 0x51ca77e5u32;
+        for length in 0..128 {
+            for _ in 0..128 {
+                let input: Vec<_> = (0..length).map(|_| {
+                    seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                    alphabet[seed as usize % alphabet.len()]
+                }).collect();
+                for start in 0..=input.len() {
+                    let expected = (start..input.len()).find(|&index| {
+                        let b = input[index]; b < 0x20 || b == b'"' || b == b'\\'
+                    }).unwrap_or(input.len());
+                    assert_eq!(super::purust_json_plain_end(&input, start), expected);
+                }
+            }
+        }
     }
 }
 
