@@ -542,7 +542,10 @@ impl<'a> PurustJsonParser<'a> {
     }
 
     fn string_escaped(&mut self) -> Result<String, String> {
-        let mut result = String::new();
+        self.string_escaped_into(String::new())
+    }
+
+    fn string_escaped_into(&mut self, mut result: String) -> Result<String, String> {
         loop {
             let Some(byte) = self.peek() else {
                 return Err(self.fail("Unterminated string"));
@@ -586,13 +589,12 @@ impl<'a> PurustJsonParser<'a> {
                     }
                 }
                 _ => {
-                    // One encoded char is one code unit.
-                    let character = self.text[self.index..]
-                        .chars()
-                        .next()
-                        .expect("a byte at a char boundary starts a char");
-                    self.index += character.len_utf8();
-                    result.push(character);
+                    // The delimiter/control bytes are ASCII, hence these
+                    // offsets remain UTF-8 boundaries in the encoded UTF-16
+                    // string. Copy a whole plain run without normalizing it.
+                    let end = purust_json_plain_end(self.bytes, self.index);
+                    result.push_str(&self.text[self.index..end]);
+                    self.index = end;
                 }
             }
         }
@@ -949,8 +951,11 @@ impl<'a> PurustJsonCursor<'a> {
         if token.end & PURUST_JSON_ESCAPED == 0 {
             return Some(std::borrow::Cow::Borrowed(&self.document.text[token.start as usize + 1..token.end as usize - 1]));
         }
-        let mut parser = PurustJsonParser { text: self.document.text, bytes: self.document.text.as_bytes(), index: token.start as usize };
-        Some(std::borrow::Cow::Owned(parser.string().ok()?))
+        let mut parser = PurustJsonParser { text: self.document.text, bytes: self.document.text.as_bytes(), index: token.start as usize + 1 };
+        // Every escape expands to at most its encoded spelling's byte length.
+        // The validated tape supplies the bound without another string scan.
+        let capacity = (token.end & !PURUST_JSON_ESCAPED) as usize - parser.index - 1;
+        Some(std::borrow::Cow::Owned(parser.string_escaped_into(String::with_capacity(capacity)).ok()?))
     }
     pub fn scalar(self, kind: &str) -> Option<crate::UnknownType> {
         match kind {
@@ -959,7 +964,11 @@ impl<'a> PurustJsonCursor<'a> {
             "Int" | "Number" => {
                 if !matches!(self.kind(), b'-' | b'0'..=b'9') { return None; }
                 let token = self.document.tokens[self.index];
-                let number = self.document.text[token.start as usize..token.end as usize].parse::<f64>().ok()?;
+                let spelling = &self.document.text[token.start as usize..token.end as usize];
+                if kind == "Int" {
+                    if let Some(integer) = purust_json_small_int(spelling) { return Some(crate::Value::Int(integer)); }
+                }
+                let number = spelling.parse::<f64>().ok()?;
                 if kind == "Number" { return Some(crate::Value::Number(number)); }
                 if number.is_finite() && number.fract() == 0.0 && (-2147483648.0..=2147483647.0).contains(&number) {
                     Some(crate::Value::Int(number as i64))
@@ -968,6 +977,9 @@ impl<'a> PurustJsonCursor<'a> {
             // Escaping Json subtrees keep ordinary materialization and aliases.
             _ => None,
         }
+    }
+    pub fn string_eq(&self, value: &str) -> Option<bool> {
+        Some(self.string()?.as_ref() == value)
     }
     pub fn fields<const N: usize>(self, keys: [&str; N]) -> Option<[Option<Self>; N]> {
         if self.kind() != b'{' { return None; }
@@ -1003,6 +1015,21 @@ impl<'a> std::iter::Iterator for PurustJsonCursorItems<'a> {
     fn size_hint(&self) -> (usize, Option<usize>) { (self.remaining, Some(self.remaining)) }
 }
 impl std::iter::ExactSizeIterator for PurustJsonCursorItems<'_> {}
+
+// Only already-validated, plain decimal Int spellings take this path. Decimal
+// points, exponents and all other cases retain the ordinary IEEE-754 conversion
+// and range check (including values which round to an integral Number).
+fn purust_json_small_int(spelling: &str) -> Option<i64> {
+    let bytes = spelling.as_bytes();
+    let negative = bytes.first() == Some(&b'-');
+    let digits = if negative { &bytes[1..] } else { bytes };
+    if digits.is_empty() || digits.len() > 10 { return None; }
+    let magnitude = digits.iter().try_fold(0i64, |value, &byte| {
+        byte.is_ascii_digit().then(|| value * 10 + (byte - b'0') as i64)
+    })?;
+    let value = if negative { -magnitude } else { magnitude };
+    (-2147483648..=2147483647).contains(&value).then_some(value)
+}
 
 // ---------------------------------------------------------------------------
 // Canonical JSON and SHA-256 for the benchmark oracle. The canonical form
