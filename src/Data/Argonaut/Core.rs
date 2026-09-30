@@ -514,17 +514,11 @@ impl<'a> PurustJsonParser<'a> {
         // characters and the unterminated case fall back to the escaping
         // loop.
         let start = self.index;
-        let mut end = start;
-        while let Some(byte) = self.bytes.get(end).copied() {
-            match byte {
-                b'"' => {
-                    let value = self.text[start..end].to_owned();
-                    self.index = end + 1;
-                    return Ok(value);
-                }
-                b'\\' | 0..=0x1f => break,
-                _ => end += 1,
-            }
+        let end = purust_json_plain_end(self.bytes, start);
+        if self.bytes.get(end) == Some(&b'"') {
+            let value = self.text[start..end].to_owned();
+            self.index = end + 1;
+            return Ok(value);
         }
         self.index = start;
         self.string_escaped()
@@ -537,17 +531,11 @@ impl<'a> PurustJsonParser<'a> {
             return Err(self.fail("Expected double-quoted property name"));
         }
         let start = self.index;
-        let mut end = start;
-        while let Some(byte) = self.bytes.get(end).copied() {
-            match byte {
-                b'"' => {
-                    let key: std::rc::Rc<str> = std::rc::Rc::from(&self.text[start..end]);
-                    self.index = end + 1;
-                    return Ok(key);
-                }
-                b'\\' | 0..=0x1f => break,
-                _ => end += 1,
-            }
+        let end = purust_json_plain_end(self.bytes, start);
+        if self.bytes.get(end) == Some(&b'"') {
+            let key: std::rc::Rc<str> = std::rc::Rc::from(&self.text[start..end]);
+            self.index = end + 1;
+            return Ok(key);
         }
         self.index = start;
         Ok(std::rc::Rc::from(self.string_escaped()?))
@@ -610,7 +598,7 @@ impl<'a> PurustJsonParser<'a> {
         }
     }
 
-    fn number(&mut self) -> Result<crate::UnknownType, String> {
+    fn number_spelling(&mut self) -> Result<&str, String> {
         let start = self.index;
         self.take(b'-');
         if !self.take(b'0') {
@@ -641,19 +629,11 @@ impl<'a> PurustJsonParser<'a> {
                 self.index += 1;
             }
         }
-        let length = self.index - start;
-        // The scanned bytes are ASCII: parse from a stack buffer so ordinary
-        // numbers allocate nothing, and keep a heap fallback for absurdly
-        // long literals.
-        let parsed = if length <= 40 {
-            let mut buffer = [0u8; 40];
-            buffer[..length].copy_from_slice(&self.bytes[start..self.index]);
-            std::str::from_utf8(&buffer[..length])
-                .ok()
-                .and_then(|spelling| spelling.parse::<f64>().ok())
-        } else {
-            self.text[start..self.index].parse::<f64>().ok()
-        };
+        Ok(&self.text[start..self.index])
+    }
+
+    fn number(&mut self) -> Result<crate::UnknownType, String> {
+        let parsed = self.number_spelling()?.parse::<f64>().ok();
         // JSON.parse uses IEEE-754 even for integers, including overflow and -0.
         match parsed {
             Some(number) => Ok(crate::Value::Number(number)),
@@ -769,6 +749,242 @@ pub fn purust_json_parse_text(text: &str) -> Result<crate::UnknownType, String> 
     }
     .parse()
 }
+
+// Eight independent byte lanes: only quote, backslash and controls terminate
+// a plain run. High UTF-8 bytes of the internal UTF-16 encoding are copied as
+// opaque bytes. Safe slice loads never read past the input, including tails.
+#[inline]
+fn purust_json_plain_end(bytes: &[u8], mut index: usize) -> usize {
+    const ONES: u64 = 0x0101010101010101;
+    const HIGH: u64 = 0x8080808080808080;
+    while index + 8 <= bytes.len() {
+        let word = u64::from_ne_bytes(bytes[index..index + 8].try_into().unwrap());
+        let quote = word ^ (ONES * b'"' as u64);
+        let slash = word ^ (ONES * b'\\' as u64);
+        let special = (quote.wrapping_sub(ONES) & !quote)
+            | (slash.wrapping_sub(ONES) & !slash)
+            | (word.wrapping_sub(ONES * 0x20) & !word);
+        if special & HIGH != 0 { break; }
+        index += 8;
+    }
+    while let Some(&byte) = bytes.get(index) {
+        if byte < 0x20 || byte == b'"' || byte == b'\\' { break; }
+        index += 1;
+    }
+    index
+}
+
+#[cfg(test)]
+mod purust_json_scan_tests {
+    #[test]
+    fn every_byte_at_every_lane_and_tail_matches_scalar_scanning() {
+        for start in 0..16 {
+            for length in 0..40 {
+                for lane in 0..length {
+                    for byte in 0..=255u8 {
+                        let mut input = vec![0xaa; start + length];
+                        input[start + lane] = byte;
+                        let expected = (start..input.len()).find(|&index| {
+                            let b = input[index]; b < 0x20 || b == b'"' || b == b'\\'
+                        }).unwrap_or(input.len());
+                        assert_eq!(super::purust_json_plain_end(&input, start), expected);
+                    }
+                }
+            }
+        }
+    }
+}
+
+// Validated, call-local offset tape for compiler-generated decoders. It never
+// escapes as Json. Final strings own their storage, and failures use the
+// ordinary parser/decoder to preserve its exact diagnostics. The bounded
+// recursive scanner declines deep input; the ordinary parser is iterative.
+const PURUST_JSON_ESCAPED: u32 = 1 << 31;
+
+#[derive(Clone, Copy, Default)]
+struct PurustJsonToken { start: u32, end: u32, next: u32 }
+
+pub struct PurustJsonDocument<'a> {
+    text: &'a str,
+    tokens: Vec<PurustJsonToken>,
+}
+
+#[derive(Clone, Copy)]
+pub struct PurustJsonCursor<'a> {
+    document: &'a PurustJsonDocument<'a>,
+    index: usize,
+}
+
+struct PurustJsonIndexer<'a> {
+    parser: PurustJsonParser<'a>,
+    tokens: Vec<PurustJsonToken>,
+}
+
+impl<'a> PurustJsonDocument<'a> {
+    pub fn parse(text: &'a str) -> Option<Self> {
+        if text.len() >= PURUST_JSON_ESCAPED as usize { return None; }
+        let mut scanner = PurustJsonIndexer {
+            parser: PurustJsonParser { text, bytes: text.as_bytes(), index: 0 },
+            tokens: Vec::with_capacity(text.len() / 6 + 8),
+        };
+        scanner.value(0)?;
+        scanner.parser.whitespace();
+        if scanner.parser.index != text.len() { return None; }
+        Some(Self { text, tokens: scanner.tokens })
+    }
+    pub fn root(&self) -> PurustJsonCursor<'_> { PurustJsonCursor { document: self, index: 0 } }
+}
+
+impl PurustJsonIndexer<'_> {
+    fn string(&mut self) -> Option<()> {
+        let start = self.parser.index;
+        if !self.parser.take(b'"') { return None; }
+        let mut escaped = false;
+        loop {
+            self.parser.index = purust_json_plain_end(self.parser.bytes, self.parser.index);
+            let byte = self.parser.peek()?;
+            self.parser.index += 1;
+            match byte {
+                b'"' => {
+                    let index = self.tokens.len();
+                    self.tokens.push(PurustJsonToken {
+                        start: start as u32,
+                        end: self.parser.index as u32 | if escaped { PURUST_JSON_ESCAPED } else { 0 },
+                        next: (index + 1) as u32,
+                    });
+                    return Some(());
+                }
+                0..=0x1f => return None,
+                b'\\' => {
+                    escaped = true;
+                    let escape = self.parser.peek()?;
+                    self.parser.index += 1;
+                    match escape {
+                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't' => {}
+                        b'u' => for _ in 0..4 {
+                            if !self.parser.peek()?.is_ascii_hexdigit() { return None; }
+                            self.parser.index += 1;
+                        },
+                        _ => return None,
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn value(&mut self, depth: usize) -> Option<()> {
+        self.parser.whitespace();
+        let start = self.parser.index;
+        let index = self.tokens.len();
+        let first = self.parser.peek()?;
+        match first {
+            b'"' => return self.string(),
+            b'{' | b'[' => {
+                if depth >= 128 { return None; }
+                let object = first == b'{';
+                let close = if object { b'}' } else { b']' };
+                self.parser.index += 1;
+                self.tokens.push(PurustJsonToken { start: start as u32, ..Default::default() });
+                self.parser.whitespace();
+                let mut count = 0;
+                let mut last_key = 0;
+                if !self.parser.take(close) {
+                    loop {
+                        if object {
+                            let key = self.tokens.len();
+                            self.string()?;
+                            self.tokens[key].next = last_key;
+                            last_key = key as u32;
+                            self.parser.whitespace();
+                            if !self.parser.take(b':') { return None; }
+                        }
+                        self.value(depth + 1)?;
+                        count += 1;
+                        self.parser.whitespace();
+                        if self.parser.take(close) { break; }
+                        if !self.parser.take(b',') { return None; }
+                        self.parser.whitespace();
+                    }
+                }
+                self.tokens[index].end = if object { last_key } else { count };
+                self.tokens[index].next = self.tokens.len() as u32;
+                return Some(());
+            }
+            b'n' | b't' | b'f' => {
+                let literal: &[u8] = match first { b'n' => b"null", b't' => b"true", _ => b"false" };
+                for &byte in literal { if !self.parser.take(byte) { return None; } }
+            }
+            b'-' | b'0'..=b'9' => { self.parser.number_spelling().ok()?; }
+            _ => return None,
+        }
+        self.tokens.push(PurustJsonToken { start: start as u32, end: self.parser.index as u32, next: (index + 1) as u32 });
+        Some(())
+    }
+}
+
+impl<'a> PurustJsonCursor<'a> {
+    pub fn kind(self) -> u8 { self.document.text.as_bytes()[self.document.tokens[self.index].start as usize] }
+    fn string(self) -> Option<std::borrow::Cow<'a, str>> {
+        if self.kind() != b'"' { return None; }
+        let token = self.document.tokens[self.index];
+        if token.end & PURUST_JSON_ESCAPED == 0 {
+            return Some(std::borrow::Cow::Borrowed(&self.document.text[token.start as usize + 1..token.end as usize - 1]));
+        }
+        let mut parser = PurustJsonParser { text: self.document.text, bytes: self.document.text.as_bytes(), index: token.start as usize };
+        Some(std::borrow::Cow::Owned(parser.string().ok()?))
+    }
+    pub fn scalar(self, kind: &str) -> Option<crate::UnknownType> {
+        match kind {
+            "String" => Some(crate::Value::String(self.string()?.into_owned())),
+            "Boolean" => match self.kind() { b't' => Some(crate::Value::Bool(true)), b'f' => Some(crate::Value::Bool(false)), _ => None },
+            "Int" | "Number" => {
+                if !matches!(self.kind(), b'-' | b'0'..=b'9') { return None; }
+                let token = self.document.tokens[self.index];
+                let number = self.document.text[token.start as usize..token.end as usize].parse::<f64>().ok()?;
+                if kind == "Number" { return Some(crate::Value::Number(number)); }
+                if number.is_finite() && number.fract() == 0.0 && (-2147483648.0..=2147483647.0).contains(&number) {
+                    Some(crate::Value::Int(number as i64))
+                } else { None }
+            }
+            // Escaping Json subtrees keep ordinary materialization and aliases.
+            _ => None,
+        }
+    }
+    pub fn fields<const N: usize>(self, keys: [&str; N]) -> Option<[Option<Self>; N]> {
+        if self.kind() != b'{' { return None; }
+        let mut fields = [None; N];
+        let mut at = self.document.tokens[self.index].end as usize;
+        while at != 0 {
+            let cursor = Self { document: self.document, index: at };
+            let key = cursor.string()?;
+            if let Some(slot) = keys.iter().position(|expected| *expected == key.as_ref()) {
+                // Reverse traversal gives the last normalized spelling of a key.
+                if fields[slot].is_none() { fields[slot] = Some(Self { document: self.document, index: at + 1 }); }
+            }
+            at = self.document.tokens[at].next as usize;
+        }
+        Some(fields)
+    }
+    pub fn array(self) -> Option<PurustJsonCursorItems<'a>> {
+        if self.kind() != b'[' { return None; }
+        Some(PurustJsonCursorItems { cursor: Self { index: self.index + 1, ..self }, remaining: self.document.tokens[self.index].end as usize })
+    }
+}
+
+pub struct PurustJsonCursorItems<'a> { cursor: PurustJsonCursor<'a>, remaining: usize }
+impl<'a> std::iter::Iterator for PurustJsonCursorItems<'a> {
+    type Item = PurustJsonCursor<'a>;
+    fn next(&mut self) -> Option<Self::Item> {
+        if self.remaining == 0 { return None; }
+        let cursor = self.cursor;
+        self.cursor.index = cursor.document.tokens[cursor.index].next as usize;
+        self.remaining -= 1;
+        Some(cursor)
+    }
+    fn size_hint(&self) -> (usize, Option<usize>) { (self.remaining, Some(self.remaining)) }
+}
+impl std::iter::ExactSizeIterator for PurustJsonCursorItems<'_> {}
 
 // ---------------------------------------------------------------------------
 // Canonical JSON and SHA-256 for the benchmark oracle. The canonical form
