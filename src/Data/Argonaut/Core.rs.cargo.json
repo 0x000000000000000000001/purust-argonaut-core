@@ -1,0 +1,6 @@
+{
+  "schema": 1,
+  "dependencies": {
+    "ryu-js": { "version": "=1.0.3" }
+  }
+}

@@ -24,16 +24,6 @@ function isArray(a) {
   return Object.prototype.toString.call(a) === "[object Array]";
 }
 
-export function _caseJson(isNull, isBool, isNum, isStr, isArr, isObj, j) {
-  if (j == null) return isNull();
-  else if (typeof j === "boolean") return isBool(j);
-  else if (typeof j === "number") return isNum(j);
-  else if (typeof j === "string") return isStr(j);
-  else if (Object.prototype.toString.call(j) === "[object Array]")
-    return isArr(j);
-  else return isObj(j);
-}
-
 export function _compare(EQ, GT, LT, a, b) {
   if (a == null) {
     if (b == null) return EQ;
@@ -100,3 +90,74 @@ export function _compare(EQ, GT, LT, a, b) {
     }
   }
 }
+export const caseJsonImpl = function (onNull) {
+  return function (onBool) {
+    return function (onNum) {
+      return function (onStr) {
+        return function (onArr) {
+          return function (onObj) {
+            return function (j) {
+              if (j === null) return onNull();
+              if (typeof j === "boolean") return onBool(j);
+              if (typeof j === "number") return onNum(j);
+              if (typeof j === "string") return onStr(j);
+              if (Array.isArray(j)) return onArr(j);
+              return onObj(j);
+            };
+          };
+        };
+      };
+    };
+  };
+};
+
+// Dedicated single-type case analysis, replacing the generic path that builds
+// six constant callbacks per call. Dispatch matches caseJsonImpl.
+export const _caseJsonNull = function (d) {
+  return function (f) {
+    return function (j) {
+      return j == null ? f() : d;
+    };
+  };
+};
+
+export const _caseJsonBoolean = function (d) {
+  return function (f) {
+    return function (j) {
+      return typeof j === "boolean" ? f(j) : d;
+    };
+  };
+};
+
+export const _caseJsonNumber = function (d) {
+  return function (f) {
+    return function (j) {
+      return typeof j === "number" ? f(j) : d;
+    };
+  };
+};
+
+export const _caseJsonString = function (d) {
+  return function (f) {
+    return function (j) {
+      return typeof j === "string" ? f(j) : d;
+    };
+  };
+};
+
+export const _caseJsonArray = function (d) {
+  return function (f) {
+    return function (j) {
+      return Array.isArray(j) ? f(j) : d;
+    };
+  };
+};
+
+export const _caseJsonObject = function (d) {
+  return function (f) {
+    return function (j) {
+      if (j == null || typeof j === "boolean" || typeof j === "number" || typeof j === "string" || Array.isArray(j)) return d;
+      return f(j);
+    };
+  };
+};

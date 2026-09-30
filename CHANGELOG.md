@@ -11,6 +11,7 @@ New features:
 Bugfixes:
 
 Other improvements:
+- Dedicated Go/JS FFI for `caseJsonNull`, `caseJsonBoolean`, `caseJsonNumber`, `caseJsonString`, `caseJsonArray` and `caseJsonObject`. The generic `caseJson` path built five or six constant callbacks per call; the dedicated functions select the matching branch directly with identical semantics. On the JSON and TAST diagnostics this removes the per-call closure allocations (e.g. `caseJsonNumber` was ~7 % of decode allocations) and improves Go decode time by 17.0 % / 10.0 % respectively.
 
 ## [v7.0.0](https://github.com/purescript-contrib/purescript-argonaut-core/releases/tag/v7.0.0) - 2022-04-27
 

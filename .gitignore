@@ -13,3 +13,6 @@ bower_components
 node_modules
 *.lock
 package-lock.json
+.DS_Store
+.spago
+.psc-ide-port

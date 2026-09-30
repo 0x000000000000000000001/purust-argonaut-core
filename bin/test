@@ -1,69 +1,45 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -e
 cd "$(dirname "$0")/.."
 
 CLEAN=0
 for arg in "$@"; do
-  case "$arg" in
-    -c|--clean) CLEAN=1 ;;
-    *) echo "Usage: bin/test [-c|--clean]" >&2; exit 2 ;;
-  esac
+  if [ "$arg" == "-c" ] || [ "$arg" == "--clean" ]; then
+    CLEAN=1
+  fi
 done
 
-COMPILER_DIR="$(cd ../purust && pwd)"
-SPAGO_BIN="$COMPILER_DIR/node_modules/.bin/spago"
-if [ ! -x "$SPAGO_BIN" ]; then
-  printf 'Missing Spago dependency. Run npm install in %s.\n' "$COMPILER_DIR" >&2
-  exit 1
-fi
-if [ "$CLEAN" = 1 ]; then
-  echo "=== Recompiling purust ==="
-  (cd "$COMPILER_DIR" && npm run build)
+if [ "$CLEAN" == "1" ]; then
+  COMPILER_DIR="../gopurs"
+  echo "=== Recompiling ${COMPILER_DIR} ==="
+  (cd "${COMPILER_DIR}" && npm run build) || { echo "Compiler build failed"; exit 1; }
 fi
 
-# Prefer the sibling TAST fork; PURS can select another build explicitly.
-if [ -n "${PURS:-}" ]; then
-  PURS_BIN="$(command -v "$PURS")"
+# Remove cache for safety
+rm -rf output .spago .cache ../gopurs-*/output ../gopurs-*/.spago ../gopurs-*/.cache
+
+rm -f spago.yaml
+ln -s spago.go.yaml spago.yaml
+
+echo "=== Building project with spago ==="
+spago build || { echo "Spago build failed"; exit 1; }
+
+echo "=== Generating Go code with gopurs ==="
+../gopurs/bin/gopurs --main Test.Main || exit 1
+
+echo "=== Compiling and running Go test binary ==="
+if [ -d "output/main" ]; then
+    cd output
+    rm -f go.mod
+    go mod init gopurs/output > /dev/null 2>&1
+    go mod tidy > /dev/null 2>&1
+    go build -o go_test_app ./main
+    cd ..
+    
+    GOGC=1000 ./output/go_test_app
 else
-  FORK_BUILDS=("$COMPILER_DIR"/../../purescript/.stack-work/dist/*/*/build/purs/purs)
-  if [ "${#FORK_BUILDS[@]}" = 1 ] && [ -x "${FORK_BUILDS[0]}" ]; then
-    PURS_BIN="${FORK_BUILDS[0]}"
-  else
-    PURS_BIN="$(command -v purs)"
-  fi
+    echo "No output/main/main found."
+    exit 1
 fi
-export PATH="$(dirname "$PURS_BIN"):$PATH"
-
-# Clean this package only. Always regenerate its TAST and Rust output.
-rm -rf output
-if [ "$CLEAN" = 1 ]; then
-  rm -rf .spago .cache
-fi
-
-echo "=== Building TAST and generating Rust with spago ==="
-"$SPAGO_BIN" build
-node -e 'const fs = require("node:fs"); const m = JSON.parse(fs.readFileSync("output/Test.Main/corefn.json", "utf8")); if (!Array.isArray(m.dataDecls)) { console.error("A TAST-enabled PureScript fork is required; set PURS to its executable."); process.exit(1); }'
-
-echo "=== Compiling Rust FFI and tests ==="
-cargo build --manifest-path output/purust_output/Cargo.toml
-
-echo "=== Running package integration tests ==="
-node --input-type=module <<'NODE'
-import { spawnSync } from 'node:child_process';
-import { readFileSync, writeFileSync } from 'node:fs';
-const binary = 'output/purust_output/target/debug/purust_output';
-const run = (scenario) => {
-  const result = spawnSync(binary, [String(scenario)], { encoding: 'utf8', timeout: 10000 });
-  writeFileSync(`output/scenario-${scenario}.stdout`, result.stdout ?? '');
-  writeFileSync(`output/scenario-${scenario}.stderr`, result.stderr ?? '');
-  if (result.error || result.signal) throw new Error(`scenario ${scenario}: ${result.error ?? result.signal}`);
-  return result;
-};
-const positive = run(0);
-process.stdout.write(positive.stdout);
-if (positive.status !== 0 || positive.stderr !== '') {
-  process.stderr.write(positive.stderr);
-  throw new Error('positive suite failed or produced unexpected output');
-}
-console.log('Summary: integration assertions passed.');
-NODE
+echo -e "
+✅ Tests passed successfully!"

@@ -1,0 +1,85 @@
+package:
+  name: "argonaut-core"
+  dependencies:
+    - arrays
+    - control
+    - either
+    - foreign
+    - foreign-object
+    - functions
+    - gen
+    - maybe
+    - nonempty
+    - prelude
+    - strings
+    - tailrec
+
+  test:
+    main: Test.Main
+    dependencies:
+      - assert
+      - console
+      - effect
+      - exceptions
+      - partial
+      - st
+      - minibench
+      - arrays
+      - either
+      - foldable-traversable
+      - maybe
+      - prelude
+      - quickcheck
+      - refs
+      - tailrec
+
+workspace:
+  packageSet:
+    registry: 77.7.0
+  extraPackages:
+    arrays:
+      path: "../gopurs-arrays"
+    assert:
+      path: "../gopurs-assert"
+    console:
+      path: "../gopurs-console"
+    effect:
+      path: "../gopurs-effect"
+    enums:
+      path: "../gopurs-enums"
+    exceptions:
+      path: "../gopurs-exceptions"
+    foldable-traversable:
+      path: "../gopurs-foldable-traversable"
+    foreign:
+      path: "../gopurs-foreign"
+    foreign-object:
+      path: "../gopurs-foreign-object"
+    functions:
+      path: "../gopurs-functions"
+    integers:
+      path: "../gopurs-integers"
+    lazy:
+      path: "../gopurs-lazy"
+    numbers:
+      path: "../gopurs-numbers"
+    partial:
+      path: "../gopurs-partial"
+    prelude:
+      path: "../gopurs-prelude"
+    random:
+      path: "../gopurs-random"
+    quickcheck:
+      path: "../gopurs-quickcheck"
+    record:
+      path: "../gopurs-record"
+    refs:
+      path: "../gopurs-refs"
+    st:
+      path: "../gopurs-st"
+    strings:
+      path: "../gopurs-strings"
+    unfoldable:
+      path: "../gopurs-unfoldable"
+    unsafe-coerce:
+      path: "../gopurs-unsafe-coerce"

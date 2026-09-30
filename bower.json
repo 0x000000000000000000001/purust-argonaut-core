@@ -30,6 +30,7 @@
     "purescript-arrays": "^7.0.0",
     "purescript-control": "^6.0.0",
     "purescript-either": "^6.0.0",
+    "purescript-foreign": "^7.0.0",
     "purescript-foreign-object": "^4.0.0",
     "purescript-functions": "^6.0.0",
     "purescript-gen": "^4.0.0",

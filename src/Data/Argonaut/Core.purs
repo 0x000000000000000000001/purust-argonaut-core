@@ -42,9 +42,10 @@ module Data.Argonaut.Core
 
 import Prelude
 
-import Data.Function.Uncurried (Fn5, runFn5, Fn7, runFn7)
+import Data.Function.Uncurried (Fn5, runFn5)
 import Data.Maybe (Maybe(..))
 import Foreign.Object (Object)
+import Unsafe.Coerce (unsafeCoerce)
 import Foreign.Object as Obj
 
 -- | The type of JSON data. The underlying representation is the same as what
@@ -70,6 +71,16 @@ instance ordJNull :: Ord JNull where
   compare _ _ = EQ
 
 -- | Case analysis for `Json` values. See the README for more information.
+foreign import caseJsonImpl
+  :: (Unit -> Json)
+  -> (Boolean -> Json)
+  -> (Number -> Json)
+  -> (String -> Json)
+  -> (Array Json -> Json)
+  -> (Object Json -> Json)
+  -> Json
+  -> Json
+
 caseJson
   :: forall a
    . (Unit -> a)
@@ -80,37 +91,55 @@ caseJson
   -> (Object Json -> a)
   -> Json
   -> a
-caseJson a b c d e f json = runFn7 _caseJson a b c d e f json
+caseJson onNull onBool onNum onStr onArr onObj j =
+  unsafeCoerce (caseJsonImpl 
+    (unsafeCoerce onNull)
+    (unsafeCoerce onBool)
+    (unsafeCoerce onNum)
+    (unsafeCoerce onStr)
+    (unsafeCoerce onArr)
+    (unsafeCoerce onObj)
+    j)
+
+-- Dedicated case analysis for the common single-type helpers. The generic
+-- `caseJson` path builds six constant callbacks per call; these FFI functions
+-- select the matching branch directly and keep the same semantics.
+foreign import _caseJsonNull :: Json -> (Unit -> Json) -> Json -> Json
+foreign import _caseJsonBoolean :: Json -> (Boolean -> Json) -> Json -> Json
+foreign import _caseJsonNumber :: Json -> (Number -> Json) -> Json -> Json
+foreign import _caseJsonString :: Json -> (String -> Json) -> Json -> Json
+foreign import _caseJsonArray :: Json -> (Array Json -> Json) -> Json -> Json
+foreign import _caseJsonObject :: Json -> (Object Json -> Json) -> Json -> Json
 
 -- | A simpler version of `caseJson` which accepts a callback for when the
 -- | `Json` argument was null, and a default value for all other cases.
 caseJsonNull :: forall a. a -> (Unit -> a) -> Json -> a
-caseJsonNull d f j = runFn7 _caseJson f (const d) (const d) (const d) (const d) (const d) j
+caseJsonNull d f j = unsafeCoerce (_caseJsonNull (unsafeCoerce d) (unsafeCoerce f) j)
 
 -- | A simpler version of `caseJson` which accepts a callback for when the
 -- | `Json` argument was a `Boolean`, and a default value for all other cases.
 caseJsonBoolean :: forall a. a -> (Boolean -> a) -> Json -> a
-caseJsonBoolean d f j = runFn7 _caseJson (const d) f (const d) (const d) (const d) (const d) j
+caseJsonBoolean d f j = unsafeCoerce (_caseJsonBoolean (unsafeCoerce d) (unsafeCoerce f) j)
 
 -- | A simpler version of `caseJson` which accepts a callback for when the
 -- | `Json` argument was a `Number`, and a default value for all other cases.
 caseJsonNumber :: forall a. a -> (Number -> a) -> Json -> a
-caseJsonNumber d f j = runFn7 _caseJson (const d) (const d) f (const d) (const d) (const d) j
+caseJsonNumber d f j = unsafeCoerce (_caseJsonNumber (unsafeCoerce d) (unsafeCoerce f) j)
 
 -- | A simpler version of `caseJson` which accepts a callback for when the
 -- | `Json` argument was a `String`, and a default value for all other cases.
 caseJsonString :: forall a. a -> (String -> a) -> Json -> a
-caseJsonString d f j = runFn7 _caseJson (const d) (const d) (const d) f (const d) (const d) j
+caseJsonString d f j = unsafeCoerce (_caseJsonString (unsafeCoerce d) (unsafeCoerce f) j)
 
 -- | A simpler version of `caseJson` which accepts a callback for when the
 -- | `Json` argument was a `Array Json`, and a default value for all other cases.
 caseJsonArray :: forall a. a -> (Array Json -> a) -> Json -> a
-caseJsonArray d f j = runFn7 _caseJson (const d) (const d) (const d) (const d) f (const d) j
+caseJsonArray d f j = unsafeCoerce (_caseJsonArray (unsafeCoerce d) (unsafeCoerce f) j)
 
 -- | A simpler version of `caseJson` which accepts a callback for when the
 -- | `Json` argument was an `Object`, and a default value for all other cases.
 caseJsonObject :: forall a. a -> (Object Json -> a) -> Json -> a
-caseJsonObject d f j = runFn7 _caseJson (const d) (const d) (const d) (const d) (const d) f j
+caseJsonObject d f j = unsafeCoerce (_caseJsonObject (unsafeCoerce d) (unsafeCoerce f) j)
 
 verbJsonType :: forall a b. b -> (a -> b) -> (b -> (a -> b) -> Json -> b) -> Json -> b
 verbJsonType def f g = g def f
@@ -245,16 +274,5 @@ foreign import stringify :: Json -> String
 -- | This number is capped at 10 (if it is greater, the value is just 10). Values less than 1 indicate that no space should be used.
 foreign import stringifyWithIndent :: Int -> Json -> String
 
-foreign import _caseJson
-  :: forall z
-   . Fn7
-       (Unit -> z)
-       (Boolean -> z)
-       (Number -> z)
-       (String -> z)
-       (Array Json -> z)
-       (Object Json -> z)
-       Json
-       z
 
 foreign import _compare :: Fn5 Ordering Ordering Ordering Json Json Ordering

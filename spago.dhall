@@ -5,6 +5,7 @@
   , "control"
   , "effect"
   , "either"
+  , "foreign"
   , "foreign-object"
   , "functions"
   , "gen"
