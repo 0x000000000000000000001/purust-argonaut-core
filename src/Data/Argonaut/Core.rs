@@ -58,10 +58,7 @@ pub fn purust_json_object_get(value: &crate::UnknownType, key: &str) -> Option<c
 }
 
 pub fn purust_json_array_items(value: &crate::UnknownType) -> Option<Vec<crate::UnknownType>> {
-    match value.resolve() {
-        crate::Value::Array(values) => Some(values.iter().cloned().collect()),
-        _ => None,
-    }
+    value.is_array().then(|| value.array_iter().collect())
 }
 
 fn purust_json_fields(object: &Purs_Foreign_Object::Object) -> String {
@@ -85,6 +82,8 @@ fn purust_json_value(value: &crate::UnknownType) -> String {
             "[{}]",
             values.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(",")
         ),
+        crate::Value::NativeArray(_) => format!("[{}]", value.array_iter()
+            .map(|item| purust_json_value(&item)).collect::<Vec<_>>().join(",")),
         crate::Value::Array(values) => format!(
             "[{}]",
             values.iter().map(purust_json_value).collect::<Vec<_>>().join(",")
@@ -111,7 +110,7 @@ pub fn Data_Argonaut_Core_fromString(value: String) -> crate::UnknownType {
 
 pub fn Data_Argonaut_Core_fromArray(value: crate::UnknownType) -> crate::UnknownType {
     match value.resolve() {
-        crate::Value::Array(_) | crate::Value::IntArray(_) => value.clone(),
+        crate::Value::Array(_) | crate::Value::IntArray(_) | crate::Value::NativeArray(_) => value.clone(),
         _ => panic!("Data.Argonaut.Core: fromArray expects an array"),
     }
 }
@@ -241,7 +240,7 @@ pub fn Data_Argonaut_Core__caseJsonArray(
     value: crate::UnknownType,
 ) -> crate::UnknownType {
     match value.resolve() {
-        crate::Value::Array(_) | crate::Value::IntArray(_) => on_array(value.clone()),
+        crate::Value::Array(_) | crate::Value::IntArray(_) | crate::Value::NativeArray(_) => on_array(value.clone()),
         _ => default,
     }
 }
@@ -273,7 +272,7 @@ pub fn Data_Argonaut_Core_caseJsonImpl(
         crate::Value::Number(number) => on_number(*number),
         crate::Value::String(text) => on_string(text.clone()),
         crate::Value::Char(character) => on_string(character.to_string()),
-        crate::Value::Array(_) | crate::Value::IntArray(_) => on_array(value.clone()),
+        crate::Value::Array(_) | crate::Value::IntArray(_) | crate::Value::NativeArray(_) => on_array(value.clone()),
         crate::Value::Class(_) => on_object(purust_json_object(&value)),
         _ => panic!("Data.Argonaut.Core: caseJson on a non-Json value"),
     }
@@ -294,7 +293,7 @@ fn purust_json_rank(value: &crate::UnknownType) -> JsonRank {
         crate::Value::Bool(_) => JsonRank::Boolean,
         crate::Value::Int(_) | crate::Value::Number(_) => JsonRank::Number,
         crate::Value::String(_) | crate::Value::Char(_) => JsonRank::String,
-        crate::Value::Array(_) | crate::Value::IntArray(_) => JsonRank::Array,
+        crate::Value::Array(_) | crate::Value::IntArray(_) | crate::Value::NativeArray(_) => JsonRank::Array,
         crate::Value::Class(_) => JsonRank::Object,
         _ => panic!("Data.Argonaut.Core: compare on a non-Json value"),
     }
@@ -321,6 +320,7 @@ fn purust_json_string_units(value: &crate::UnknownType) -> Vec<u16> {
 
 fn purust_json_array_values(value: &crate::UnknownType) -> Vec<crate::UnknownType> {
     match value.resolve() {
+        crate::Value::NativeArray(_) => value.array_iter().collect(),
         crate::Value::Array(values) => values.iter().cloned().collect(),
         crate::Value::IntArray(values) => values
             .iter()
@@ -397,7 +397,7 @@ fn purust_json_compare_values(
                 PurustJsonOrdering::Greater
             }
         }
-        crate::Value::Array(_) | crate::Value::IntArray(_) => {
+        crate::Value::Array(_) | crate::Value::IntArray(_) | crate::Value::NativeArray(_) => {
             let left_values = purust_json_array_values(left);
             let right_values = purust_json_array_values(right);
             for (left_value, right_value) in left_values.iter().zip(right_values.iter()) {
@@ -1012,6 +1012,8 @@ fn purust_canonical_value(value: &crate::UnknownType) -> String {
             "[{}]",
             values.iter().map(|n| n.to_string()).collect::<Vec<_>>().join(",")
         ),
+        crate::Value::NativeArray(_) => format!("[{}]", value.array_iter()
+            .map(|item| purust_canonical_value(&item)).collect::<Vec<_>>().join(",")),
         crate::Value::Array(values) => format!(
             "[{}]",
             values
