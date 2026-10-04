@@ -1000,6 +1000,43 @@ impl<'a> PurustJsonCursor<'a> {
         if self.kind() != b'[' { return None; }
         Some(PurustJsonCursorItems { cursor: Self { index: self.index + 1, ..self }, remaining: self.document.tokens[self.index].end as usize })
     }
+    /// Materialize a validated subtree into the ordinary boxed JSON
+    /// representation. Compiler FFI uses this for cold fields that keep their
+    /// generated decoders; the result is built exactly like
+    /// `purust_json_parse_text` builds it: object entries in document order
+    /// through `from_entries_shared` (duplicates keep the last value), numbers
+    /// as `Value::Number`, strings in the encoded UTF-16 domain, arrays as
+    /// shared vectors.
+    pub fn materialize(self) -> Option<crate::UnknownType> {
+        match self.kind() {
+            b'"' => Some(crate::Value::String(self.string()?.into_owned())),
+            b'{' => {
+                let mut entries: Vec<(std::rc::Rc<str>, crate::UnknownType)> = Vec::new();
+                // Key.next walks the object backwards from its last key.
+                let mut at = self.document.tokens[self.index].end as usize;
+                while at != 0 {
+                    let key = Self { document: self.document, index: at }.string()?;
+                    let value = Self { document: self.document, index: at + 1 }.materialize()?;
+                    entries.push((std::rc::Rc::from(key.as_ref()), value));
+                    at = self.document.tokens[at].next as usize;
+                }
+                entries.reverse();
+                Some(crate::Value::Class(std::rc::Rc::new(std::rc::Rc::new(
+                    Purs_Foreign_Object::Object::from_entries_shared(entries),
+                ))))
+            }
+            b'[' => {
+                let items = self.array()?;
+                let mut values = Vec::with_capacity(items.len());
+                for item in items { values.push(item.materialize()?); }
+                Some(crate::Value::Array(std::rc::Rc::new(values)))
+            }
+            b't' => Some(crate::Value::Bool(true)),
+            b'f' => Some(crate::Value::Bool(false)),
+            b'n' => Some(crate::Value::Null),
+            _ => Some(self.scalar("Number")?),
+        }
+    }
 }
 
 pub struct PurustJsonCursorItems<'a> { cursor: PurustJsonCursor<'a>, remaining: usize }
